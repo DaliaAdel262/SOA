@@ -1,27 +1,67 @@
-from flask import Flask, jsonify
-import mysql.connector
+from flask import Flask, jsonify, request
+import pyodbc
 
 app = Flask(__name__)
 
-# def get_db():
-    
-#     # Need to adjust to allow remote connections so we can all access same database
-#     return mysql.connector.connect(
-#         host="localhost",
-#         user="ecommerce_user",
-#         password="secure_password",
-#         database="ecommerce_system"
-#     )
+# Connect to SQL Server
+conn = pyodbc.connect(
+    'DRIVER={ODBC Driver 17 for SQL Server};'
+    'SERVER=localhost;'
+    'DATABASE=EcommerceSystem;'
+    'Trusted_Connection=yes;'
+)
+cursor = conn.cursor()
 
-@app.get("/api/inventory/check/<int:product_id>")
-def check_inventory(product_id):
-    conn = get_db()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM inventory WHERE product_id=%s", (product_id,))
-    data = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return jsonify(data)
+# ----------------------------
+# Check stock availability
+# ----------------------------
+@app.route("/api/inventory/check/<int:product_id>", methods=["GET"])
+def check_stock(product_id):
+    cursor.execute("SELECT ProductID, ProductName, QuantityAvailable, UnitPrice FROM Inventory WHERE ProductID = ?", (product_id,))
+    row = cursor.fetchone()
+    if row:
+        return jsonify({
+            "product_id": row.ProductID,
+            "product_name": row.ProductName,
+            "quantity_available": row.QuantityAvailable,
+            "unit_price": float(row.UnitPrice)
+        })
+    return jsonify({"error": "Product not found"}), 404
 
+# ----------------------------
+# Update inventory after an order
+# ----------------------------
+@app.route("/api/inventory/update", methods=["PUT"])
+def update_stock():
+    data = request.get_json()
+    product_id = data.get('product_id')
+    quantity_sold = data.get('quantity_sold')  # must match JSON key from Postman
+
+    if product_id is None or quantity_sold is None:
+        return jsonify({"error": "Missing product_id or quantity_sold"}), 400
+
+    # Get current stock
+    cursor.execute("SELECT QuantityAvailable FROM Inventory WHERE ProductID = ?", (product_id,))
+    row = cursor.fetchone()
+    if row is None:
+        return jsonify({"error": "Product not found"}), 404
+
+    new_quantity = row.QuantityAvailable - quantity_sold
+    if new_quantity < 0:
+        return jsonify({"error": "Not enough stock"}), 400
+
+    # Update inventory in database
+    cursor.execute("UPDATE Inventory SET QuantityAvailable = ? WHERE ProductID = ?", (new_quantity, product_id))
+    conn.commit()
+
+    return jsonify({
+        "message": "Inventory updated successfully",
+        "product_id": product_id,
+        "new_quantity": new_quantity
+    })
+
+# ----------------------------
+# Run Flask app
+# ----------------------------
 if __name__ == "__main__":
-    app.run(port=5002, debug=True)
+    app.run(port=5002)
